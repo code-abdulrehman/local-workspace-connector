@@ -15,6 +15,7 @@ Tools:
   read_exec_log             - paginated read of job log file
 """
 
+import asyncio
 import os
 import json
 import shutil
@@ -29,6 +30,14 @@ from .exec_sandbox import ExecSandbox
 logger = logging.getLogger("tools")
 
 TOOL_ERROR = "ToolError"
+
+
+def asyncio_get_event_loop_safe():
+    """Return the active loop, or create one for non-async callers."""
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.new_event_loop()
 
 class ToolError(Exception):
     pass
