@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-sandbox
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8000}:8000"
+    environment:
+      - MCP_BEARER_TOKEN=${MCP_BEARER_TOKEN}
+      - MCP_PORT=8000
+      - SANDBOX_CONFIG_PATH=/opt/sandbox-config/sandbox.yaml
+    volumes:
+      # Workspace bind-mount: the ONLY folder on host exposed to the server
+      - ./workspace:/workspace:rw
+      # Config is mounted READ-ONLY, never inside workspace
+      - ./config/sandbox.yaml:/opt/sandbox-config/sandbox.yaml:ro
+      # Docker socket for spawning ephemeral exec containers
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # NO --privileged, NO host network, NO host PID, NO root user
+    user: "1000:1000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,noexec
+      - /var/run:size=10m
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G

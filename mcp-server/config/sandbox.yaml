@@ -1,0 +1,34 @@
+# sandbox.yaml — Human-owned configuration.
+# This file is mounted READ-ONLY into the MCP server container at /opt/sandbox-config/sandbox.yaml.
+# It is NOT inside the workspace folder and CANNOT be edited by any MCP tool.
+# Changes require a human to edit this file and restart the container.
+
+workspace: "/home/user/projects/my-app"
+
+# Allowlist of FIRST WORDS accepted by exec_sandboxed.
+# Arguments are validated for shell metacharacters.
+allowlist:
+  - "ls"
+  - "cat"
+  - "mkdir"
+  - "rmdir"
+  - "echo"
+  - "python3"
+  - "pip"
+  - "node"
+  - "npm"
+  - "pnpm"
+  - "npx"
+  - "grep"
+  - "head"
+  - "tail"
+  - "wc"
+  - "find"
+
+# Quota limits (hard coded in server code, cannot be changed via MCP)
+max_single_file_mb: 500
+max_file_count: 20000
+max_read_bytes: 1048576
+
+# Background job limits
+job_timeout_minutes: 30
