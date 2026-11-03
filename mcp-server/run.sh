@@ -3,6 +3,9 @@
 
 set -e
 
+# Resolve .env, docker-compose.yml, and workspace paths from this script's directory.
+cd "$(dirname "$(readlink -f "$0")")"
+
 echo "=== MCP SANDBOX SERVER SETUP ==="
 
 # Check if Docker is running
@@ -29,7 +32,7 @@ mkdir -p "$PROJECT_FOLDER_ON_HOST/.sandbox/logs" "$PROJECT_FOLDER_ON_HOST/.sandb
 
 # Start Docker compose
 echo "Starting MCP server..."
-docker compose up -d
+docker compose --env-file .env up -d --force-recreate
 
 # Wait for server to start
 echo "Waiting for server to start (5 seconds)..."
