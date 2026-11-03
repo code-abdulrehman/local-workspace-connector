@@ -3,7 +3,8 @@
 # It is NOT inside the workspace folder and CANNOT be edited by any MCP tool.
 # Changes require a human to edit this file and restart the container.
 
-workspace: "/home/user/projects/my-app"
+# Container path. docker-compose.yml mounts PROJECT_FOLDER_ON_HOST here.
+workspace: "/workspace"
 
 # Allowlist of FIRST WORDS accepted by exec_sandboxed.
 # Arguments are validated for shell metacharacters.

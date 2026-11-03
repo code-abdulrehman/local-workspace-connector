@@ -12,10 +12,6 @@ if ! docker info > /dev/null 2>&1; then
     exit 1
 fi
 
-# Create workspace directories if they don't exist
-mkdir -p workspace/.sandbox/logs
-mkdir -p workspace/.sandbox/jobs
-
 # Generate .env file if it doesn't exist
 if [ ! -f .env ]; then
     echo "Generating .env file with placeholders..."
@@ -23,6 +19,13 @@ if [ ! -f .env ]; then
     echo "Please edit .env and set your MCP_BEARER_TOKEN"
     exit 1
 fi
+
+# Create the configured host workspace (or ./workspace by default) before Docker mounts it.
+set -a
+. ./.env
+set +a
+PROJECT_FOLDER_ON_HOST=${PROJECT_FOLDER_ON_HOST:-./workspace}
+mkdir -p "$PROJECT_FOLDER_ON_HOST/.sandbox/logs" "$PROJECT_FOLDER_ON_HOST/.sandbox/jobs"
 
 # Start Docker compose
 echo "Starting MCP server..."

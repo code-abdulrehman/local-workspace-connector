@@ -9,6 +9,7 @@ import sys
 import json
 import asyncio
 import hashlib
+import yaml
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -41,7 +42,7 @@ CONFIG = {
 try:
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH) as f:
-            loaded = json.load(f)
+            loaded = yaml.safe_load(f) or {}
             CONFIG.update(loaded)
 except Exception:
     pass
