@@ -70,11 +70,12 @@ class ToolRegistry(ExecSandbox):
 # We subclass ExecSandbox but override methods directly instead, so that
 # the exec logic lives here too.
 class Tools(ExecSandbox):
-    def __init__(self, workspace: str):
+    def __init__(self, workspace: str, job_timeout_seconds: int = 30 * 60):
         super().__init__()
         self.workspace = os.path.realpath(workspace)
         self.pg = PathGuard(allowed=workspace)
         self.quota = QuotaManager(workspace=workspace)
+        self.job_timeout_seconds = job_timeout_seconds
 
     # -- error helpers ------------------------------------------------------
     def __getattr__(self, name):
@@ -219,14 +220,14 @@ class Tools(ExecSandbox):
         job_id = params.get("job_id")
         if isinstance(cmd_args, str):
             cmd_args = [cmd_args]
-        job_timeout = params.get("timeout_minutes", JOB_TIMEOUT_SECONDS // 60)
+        job_timeout = params.get("timeout_minutes", self.job_timeout_seconds // 60)
 
         # validate no shell metacharacters anywhere
-        _validate_no_shell_metachars(cmd_args)
+        self._validate_no_shell_metachars(cmd_args)
 
         # validate first command against allowlist
         first = cmd_args[0] if cmd_args else ""
-        if first not in ALLOWED_COMMANDS:
+        if first not in self.allowed_commands:
             _log("exec_sandboxed", first, "exec_reject", False)
             raise ValueError(f"command '{first}' is not in the allowlist")
 

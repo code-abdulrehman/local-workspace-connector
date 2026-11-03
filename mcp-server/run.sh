@@ -32,7 +32,7 @@ mkdir -p "$PROJECT_FOLDER_ON_HOST/.sandbox/logs" "$PROJECT_FOLDER_ON_HOST/.sandb
 
 # Start Docker compose
 echo "Starting MCP server..."
-docker compose --env-file .env up -d --force-recreate
+docker compose --env-file .env up -d --build --force-recreate
 
 # Wait for server to start
 echo "Waiting for server to start (5 seconds)..."

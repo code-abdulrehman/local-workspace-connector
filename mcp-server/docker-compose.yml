@@ -16,7 +16,7 @@ services:
       - SANDBOX_CONFIG_PATH=/opt/sandbox-config/sandbox.yaml
     volumes:
       # Workspace bind-mount: the ONLY folder on host exposed to the server
-      - ${PROJECT_FOLDER_ON_HOST:-./workspace}:/workspace:rw
+      - ${PROJECT_FOLDER_ON_HOST:-../workspace}:/workspace:rw
       # Config is mounted READ-ONLY, never inside workspace
       - ./config/sandbox.yaml:/opt/sandbox-config/sandbox.yaml:ro
       # Docker socket for spawning ephemeral exec containers

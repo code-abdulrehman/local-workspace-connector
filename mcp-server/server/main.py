@@ -70,7 +70,7 @@ def config_hash():
 
 def build_tool_registry():
     registry = {}
-    t = Tools(workspace=WORKSPACE_DIR)
+    t = Tools(workspace=WORKSPACE_DIR, job_timeout_seconds=JOB_TIMEOUT_SECONDS)
     tool_defs = build_tool_definitions()
     for tool_def in tool_defs:
         func_name = tool_def["function"]["name"]
