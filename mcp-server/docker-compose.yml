@@ -5,6 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     container_name: mcp-sandbox
     restart: unless-stopped
     ports:
