@@ -2,7 +2,7 @@
 FROM python:3.11-slim AS builder
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --user -r requirements.txt
+RUN pip install --user --default-timeout=120 --retries=5 -r requirements.txt
 
 FROM python:3.11-slim
 WORKDIR /app
