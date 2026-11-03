@@ -172,7 +172,7 @@ def _handle_mcp_message(msg, session_id=""):
                     return {"jsonrpc": "2.0", "id": msg.get("id"), "error": {"code": -32602, "message": f"Tool '{tool_name}' not found"}}
                 try:
                     tool = tool_registry[tool_name]
-                    result = tool(**args)
+                    result = tool(args)
                     return {"jsonrpc": "2.0", "result": {"content": [{"type": "text", "text": json.dumps(result)}], "isError": False}, "id": msg.get("id")}
                 except ToolError as e:
                     return {"jsonrpc": "2.0", "id": msg.get("id"), "error": {"code": -32603, "message": str(e)}}
@@ -194,7 +194,7 @@ def _handle_mcp_message(msg, session_id=""):
     
     tool = tool_registry[tool_name]
     try:
-        result = tool(**params)
+        result = tool(params)
         return {"jsonrpc": "2.0", "result": result}
     except ToolError as e:
         return {"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32603, "message": str(e)}}
