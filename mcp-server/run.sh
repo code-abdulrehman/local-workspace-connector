@@ -46,14 +46,25 @@ else
     exit 1
 fi
 
-# Start ngrok (use downloaded version if old version fails)
+# Start ngrok, using the configured static domain when present.
 NGROK_BIN="/home/abdul/Downloads/ngrok"
-if [ -x "$NGROK_BIN" ]; then
-    echo "Starting ngrok (new version)..."
-    $NGROK_BIN http 8000 > /dev/null 2>&1 &
+if [ ! -x "$NGROK_BIN" ]; then
+    NGROK_BIN=$(command -v ngrok || true)
+fi
+if [ -z "$NGROK_BIN" ]; then
+    echo "ERROR: ngrok is required. Install ngrok or place it at /home/abdul/Downloads/ngrok."
+    exit 1
+fi
+
+if [ -n "${NGROK_STATIC_DOMAIN:-}" ]; then
+    NGROK_DOMAIN=${NGROK_STATIC_DOMAIN#https://}
+    NGROK_DOMAIN=${NGROK_DOMAIN#http://}
+    NGROK_DOMAIN=${NGROK_DOMAIN%/}
+    echo "Starting ngrok with static domain: https://$NGROK_DOMAIN"
+    "$NGROK_BIN" http --domain="$NGROK_DOMAIN" 8000 > /dev/null 2>&1 &
 else
-    echo "Starting ngrok..."
-    ngrok http 8000 > /dev/null 2>&1 &
+    echo "Starting ngrok with an automatically assigned temporary URL..."
+    "$NGROK_BIN" http 8000 > /dev/null 2>&1 &
 fi
 NGROK_PID=$!
 
