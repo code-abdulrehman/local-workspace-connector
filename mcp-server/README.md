@@ -19,7 +19,7 @@ AI Client (Muse)
 |-------|---------------|----------------|
 | **1. Path Validation** | `../`, absolute paths, symlink escapes | `PathGuard` resolves all paths to real absolute paths and ensures they stay inside `/workspace` |
 | **2. Symlink Resolution** | Symlinks pointing outside workspace | `PathGuard` resolves symlinks and rejects any target outside the allowed directory |
-| **3. Docker Sandbox** | Host filesystem access, host network, host PID namespace | Each exec runs in an ephemeral Docker container with `--read-only`, `--tmpfs /tmp`, `--memory 2g`, `--pids-limit 100`, `--network none` |
+| **3. Docker Sandbox** | Host filesystem access, host network, host PID namespace | Each exec runs in an ephemeral Docker container with `--read-only`, `--tmpfs /tmp`, `--memory 2g`, and `--pids-limit 100`; pnpm jobs can reach package registries |
 | **4. Hard 5 GB Limit** | Disk fill attacks, quota bypass | Physical 5 GB disk image + code-level pre-write checks |
 | **5. Allowlist + No Privileges** | Command injection, privilege escalation | Only allowed commands (`ls`, `cat`, `mkdir`, `rmdir`, `echo`, `python3`, `pip`, `node`, `npm`, `npx`, `grep`, `head`, `tail`, `wc`, `find`) are permitted; no `docker`, `sudo`, `bash`, `curl`, etc. |
 
@@ -86,7 +86,7 @@ The `run.sh` script automatically starts ngrok and returns the public HTTPS URL.
 ## Security Guarantees
 
 - **No host disk access**: The workspace is mounted inside a 5 GB disk image. Writing beyond 5 GB fails with `ENOSPC` inside the container only.
-- **No host network**: The container has `--network none` by default; no outbound connections.
+- **Network access**: Commands have no network by default. pnpm jobs can reach package registries to install dependencies.
 - **No privileged execution**: Container runs as UID 1000, with `--cap-drop ALL` and `--read-only` root filesystem.
 - **No shell access**: All commands run via Docker sandbox; no `bash -c` or `sh` allowed.
 - **No limit change**: The `MAX_WORKSPACE_BYTES` constant is hardcoded; no MCP tool can modify it.

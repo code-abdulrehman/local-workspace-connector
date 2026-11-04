@@ -27,10 +27,15 @@ fi
 set -a
 . ./.env
 set +a
-PROJECT_FOLDER_ON_HOST=${PROJECT_FOLDER_ON_HOST:-./workspace}
+PROJECT_FOLDER_ON_HOST=$(realpath -m "${PROJECT_FOLDER_ON_HOST:-../workspace}")
+export PROJECT_FOLDER_ON_HOST
 mkdir -p "$PROJECT_FOLDER_ON_HOST/.sandbox/logs" "$PROJECT_FOLDER_ON_HOST/.sandbox/jobs"
 DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
 export DOCKER_GID
+
+# Build a Node sandbox image with pnpm installed before execution containers
+# start with networking disabled.
+docker build -f sandbox-node.Dockerfile -t muse-sandbox-node:22 .
 
 # Start Docker compose
 echo "Starting MCP server..."

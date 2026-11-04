@@ -73,9 +73,12 @@ class ToolRegistry(ExecSandbox):
 # We subclass ExecSandbox but override methods directly instead, so that
 # the exec logic lives here too.
 class Tools(ExecSandbox):
-    def __init__(self, workspace: str, job_timeout_seconds: int = 30 * 60):
-        super().__init__()
+    def __init__(self, workspace: str = "/workspace", job_timeout_seconds: int = 30 * 60, allowed_commands=None):
+        super().__init__(allowed_commands=allowed_commands)
         self.workspace = os.path.realpath(workspace)
+        self.sandbox_workspace = os.path.realpath(
+            os.environ.get("SANDBOX_WORKSPACE_HOST_PATH", self.workspace)
+        )
         self.pg = PathGuard(allowed=workspace)
         self.quota = QuotaManager(workspace=workspace)
         self.job_timeout_seconds = job_timeout_seconds
@@ -225,7 +228,14 @@ class Tools(ExecSandbox):
         job_id = params.get("job_id")
         if isinstance(cmd_args, str):
             cmd_args = [cmd_args]
-        job_timeout = params.get("timeout_minutes", self.job_timeout_seconds // 60)
+        try:
+            job_timeout = int(params.get("timeout_minutes", self.job_timeout_seconds // 60))
+        except (TypeError, ValueError):
+            raise ValueError("timeout_minutes must be a positive integer")
+        max_timeout_minutes = max(1, self.job_timeout_seconds // 60)
+        if job_timeout < 1:
+            raise ValueError("timeout_minutes must be a positive integer")
+        job_timeout = min(job_timeout, max_timeout_minutes)
 
         # validate no shell metacharacters anywhere
         self._validate_no_shell_metachars(cmd_args)
@@ -251,7 +261,8 @@ class Tools(ExecSandbox):
             "storage_usage": None,
             "killed": False,
         }
-        self._exec_registry[job_id] = job
+        with self._lock:
+            self._exec_registry[job_id] = job
         thread = threading.Thread(
             target=self._spawn_exec_sync,
             args=(job_id, cmd_args, job_timeout),
@@ -262,27 +273,33 @@ class Tools(ExecSandbox):
 
     def exec_status(self, params):
         job_id = params.get("job_id")
-        info = self._exec_registry.get(job_id)
-        if not info:
+        if not isinstance(job_id, str) or not re.fullmatch(r"j_[0-9a-f]{12}", job_id):
             return {"status": "unknown", "message": f"unknown job_id {job_id}"}
-        # check timeout
-        remaining = info["started"] + info["timeout"] - time.time()
-        if remaining <= 0 and not info.get("finished"):
-            info["killed"] = True
-        return {
-            "job_id": job_id,
-            "status": "running" if not info.get("finished") else ("succeeded" if info.get("exit_code") == 0 else "failed"),
-            "exit_code": info.get("exit_code"),
-            "stdout_tail": info.get("stdout_tail", b""),
-            "stderr_tail": info.get("stderr_tail", b""),
-            "storage_usage": info.get("storage_usage", {}),
-            "killed": info.get("killed", False),
-        }
+        with self._lock:
+            info = self._exec_registry.get(job_id)
+            if not info:
+                return {"status": "unknown", "message": f"unknown job_id {job_id}"}
+            remaining = info["started"] + info["timeout"] - time.time()
+            if remaining <= 0 and not info.get("finished"):
+                info["killed"] = True
+            return {
+                "job_id": job_id,
+                "status": "running" if not info.get("finished") else ("succeeded" if info.get("exit_code") == 0 else "failed"),
+                "exit_code": info.get("exit_code"),
+                "stdout_tail": info.get("stdout_tail", b""),
+                "stderr_tail": info.get("stderr_tail", b""),
+                "storage_usage": info.get("storage_usage", {}),
+                "killed": info.get("killed", False),
+            }
 
     def read_exec_log(self, params):
         job_id = params.get("job_id")
+        if not isinstance(job_id, str) or not re.fullmatch(r"j_[0-9a-f]{12}", job_id):
+            return {"job_id": job_id, "logs": "", "finished": False}
         start = int(params.get("offset", 0))
         limit = int(params.get("limit", 1024))
+        if start < 0 or limit < 0:
+            raise ValueError("offset and limit must be non-negative")
         job_path = os.path.join(self.job_dir, job_id + ".log")
         if not os.path.isfile(job_path):
             return {"job_id": job_id, "logs": "", "finished": False}
@@ -314,7 +331,7 @@ class Tools(ExecSandbox):
         done_path = os.path.join(self.job_dir, job_id + ".done")
         binary = cmd_args[0]
         if binary in {"node", "npm", "npx", "pnpm"}:
-            image = "node:22-alpine"
+            image = "muse-sandbox-node:22"
         elif binary in {"python3", "pip"}:
             image = "python:3.11-alpine"
         else:
@@ -331,8 +348,8 @@ class Tools(ExecSandbox):
                 auto_remove=False,
                 working_dir="/workspace",
                 user="1000:1000",
-                volumes={self.workspace: {"bind": "/workspace", "mode": "rw"}},
-                network_disabled=True,
+                volumes={self.sandbox_workspace: {"bind": "/workspace", "mode": "rw"}},
+                network_disabled=binary != "pnpm",
                 read_only=True,
                 tmpfs={"/tmp": "rw,noexec,nosuid,size=256m"},
                 cap_drop=["ALL"],
@@ -342,7 +359,7 @@ class Tools(ExecSandbox):
                 pids_limit=100,
             )
             try:
-                result = container.wait(timeout=max(1, timeout_minutes * 60))
+                result = container.wait(timeout=max(1, min(timeout_minutes * 60, self.job_timeout_seconds)))
                 exit_code = result.get("StatusCode", 1)
             except Exception:
                 container.kill()
