@@ -36,7 +36,7 @@ export DOCKER_GID
 
 # Build a Node sandbox image with pnpm installed before execution containers
 # start with networking disabled.
-docker build -f sandbox-node.Dockerfile -t muse-sandbox-node:22 .
+docker build -f sandbox-node.Dockerfile -t mcp-sandbox-node:22 .
 
 # Start Docker compose
 echo "Starting MCP server..."
@@ -96,10 +96,10 @@ echo "========================================"
 echo "✓ MCP SERVER IS RUNNING"
 echo "✓ ngrok URL: $NGROK_URL"
 echo "========================================"
-echo "Connect your AI agent (Muse) to:"
+echo "Connect any MCP-compatible client to:"
 echo "  1. Use the ngrok URL above as the connector endpoint"
 echo "  2. Set Authorization: Bearer [MCP_BEARER_TOKEN] in your .env"
-echo "  3. Connect and use only the allowed tools: ls, cat, mkdir, rmdir, echo, python3, pip, node, npm, npx, grep, head, tail, wc, find"
+echo "  3. Discover available runtimes and tools with sandbox_capabilities"
 echo ""
 echo "To stop: run ./stop.sh"
 echo "========================================"

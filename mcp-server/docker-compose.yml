@@ -15,6 +15,7 @@ services:
       - MCP_PORT=8000
       - SANDBOX_CONFIG_PATH=/opt/sandbox-config/sandbox.yaml
       - SANDBOX_WORKSPACE_HOST_PATH=${PROJECT_FOLDER_ON_HOST:-../workspace}
+      - MCP_WORKSPACE_LIMIT_GB=${MCP_WORKSPACE_LIMIT_GB:-5}
     volumes:
       # Workspace bind-mount: the ONLY folder on host exposed to the server
       - ${PROJECT_FOLDER_ON_HOST:-../workspace}:/workspace:rw

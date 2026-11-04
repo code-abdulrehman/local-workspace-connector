@@ -17,6 +17,7 @@ Tools:
 
 import os
 import json
+import hashlib
 import shutil
 import logging
 import re
@@ -26,7 +27,12 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from .quota import QuotaManager, StorageLimitExceeded, MAX_WORKSPACE_BYTES
+from .quota import (
+    MAX_CONFIGURABLE_WORKSPACE_LIMIT_GB,
+    QuotaManager,
+    StorageLimitExceeded,
+    set_workspace_limit_gb,
+)
 from .path_guard import PathGuard, PathOutsideAllowed, PathTooLong
 from .exec_sandbox import ExecSandbox
 
@@ -216,10 +222,10 @@ class Tools(ExecSandbox):
     def get_storage_status(self, _params=None):
         snap = self.quota.snapshot()
         return {
-            "limit_bytes": MAX_WORKSPACE_BYTES,
+            "limit_bytes": self.quota.max_workspace_bytes,
             "used_bytes": snap.used_bytes,
             "free_bytes": snap.free_bytes,
-            "percent_used": round(snap.used_bytes / MAX_WORKSPACE_BYTES * 100, 2),
+            "percent_used": round(snap.used_bytes / self.quota.max_workspace_bytes * 100, 2),
             "file_count": snap.file_count,
             "allowed_directory": "/workspace",
         }
@@ -230,10 +236,24 @@ class Tools(ExecSandbox):
         """Create a short-lived user approval request; never grants access itself."""
         scope = params.get("scope")
         reason = str(params.get("reason", "")).strip()
-        if scope not in {"network", "service:postgres", "service:mongodb"}:
+        if scope not in {
+            "network", "service:postgres", "service:mongodb",
+            "runtime:base", "runtime:elixir", "runtime:python", "storage:increase",
+        }:
             raise ValueError("unsupported permission scope")
         if not reason or len(reason) > 500:
             raise ValueError("reason must be between 1 and 500 characters")
+        requested_limit_gb = None
+        if scope == "storage:increase":
+            try:
+                requested_limit_gb = float(params.get("limit_gb"))
+            except (TypeError, ValueError):
+                raise ValueError("limit_gb is required for storage:increase")
+            current_limit_gb = self.quota.max_workspace_bytes / (1024 ** 3)
+            if not current_limit_gb < requested_limit_gb <= MAX_CONFIGURABLE_WORKSPACE_LIMIT_GB:
+                raise ValueError(
+                    f"requested limit_gb must be greater than the current {current_limit_gb:g} GB and at most {MAX_CONFIGURABLE_WORKSPACE_LIMIT_GB} GB"
+                )
         request_id = "p_" + secrets.token_hex(8)
         with self._lock:
             self._permission_requests[request_id] = {
@@ -242,6 +262,7 @@ class Tools(ExecSandbox):
                 "created": time.time(),
                 "expires": time.time() + 600,
                 "status": "pending",
+                "limit_gb": requested_limit_gb,
             }
         return {
             "request_id": request_id,
@@ -249,7 +270,11 @@ class Tools(ExecSandbox):
             "reason": reason,
             "status": "pending_user_approval",
             "expires_in_seconds": 600,
-            "user_prompt": f"Approve {scope} for this isolated sandbox task? Reason: {reason}",
+            "user_prompt": (
+                f"Approve increasing the workspace quota to {requested_limit_gb:g} GB? Reason: {reason}"
+                if scope == "storage:increase"
+                else f"Approve {scope} for this isolated sandbox task? Reason: {reason}"
+            ),
             "approval_phrase": f"approve:{request_id}",
             "instruction": "Show the request to the user and wait for an explicit yes before calling sandbox_approve_permission.",
         }
@@ -258,6 +283,7 @@ class Tools(ExecSandbox):
         return {
             "runtimes": ["node", "python", "elixir", "base"],
             "temporary_services": ["postgres", "mongodb"],
+            "workspace_limit_gb": self.quota.max_workspace_bytes / (1024 ** 3),
             "project_isolation": "Pass project_path to mount only that project into command containers.",
             "network": "Disabled by default; package downloads require a one-use network permission.",
             "approval_flow": ["sandbox_request_permission", "show the request to the user and wait", "sandbox_approve_permission"],
@@ -285,7 +311,20 @@ class Tools(ExecSandbox):
             "status": request["status"],
             "permission_id": request.get("grant"),
             "scope": request["scope"],
+            "limit_gb": request.get("limit_gb"),
             "uses": 1 if approved else 0,
+        }
+
+    def sandbox_set_storage_limit(self, params):
+        request = self._consume_permission(params.get("permission_id"), "storage:increase")
+        requested_limit_gb = request.get("limit_gb")
+        if requested_limit_gb is None:
+            raise ValueError("approved storage request has no limit")
+        set_workspace_limit_gb(requested_limit_gb)
+        return {
+            "limit_gb": requested_limit_gb,
+            "limit_bytes": self.quota.max_workspace_bytes,
+            "persistence": "current server process; set MCP_WORKSPACE_LIMIT_GB in .env to retain after restart",
         }
 
     def _consume_permission(self, permission_id, scope):
@@ -306,15 +345,31 @@ class Tools(ExecSandbox):
         host_path = self.sandbox_workspace if relative == "." else os.path.join(self.sandbox_workspace, relative)
         return resolved, os.path.realpath(host_path)
 
+    def _runtime_storage(self, project_path):
+        project_key = hashlib.sha256(project_path.encode("utf-8")).hexdigest()[:16]
+        container_path = self.pg.validate_write(os.path.join(self.workspace, ".sandbox", "runtimes", project_key))
+        relative = os.path.relpath(container_path, self.workspace)
+        host_path = os.path.join(self.sandbox_workspace, relative)
+        os.makedirs(host_path, exist_ok=True)
+        return os.path.realpath(host_path)
+
+    def sandbox_reset_runtime(self, params):
+        if params.get("confirm") is not True:
+            raise ValueError("confirm=true is required to reset the project's runtime packages")
+        project_path, _ = self._project_mount(params.get("project_path"))
+        storage_path = self._runtime_storage(project_path)
+        shutil.rmtree(storage_path, ignore_errors=True)
+        return {"project_path": project_path, "status": "runtime_packages_removed"}
+
     def sandbox_start_service(self, params):
         service = params.get("service")
         if service not in {"postgres", "mongodb"}:
             raise ValueError("service must be postgres or mongodb")
         project_path, project_host_path = self._project_mount(params.get("project_path"))
-        self._consume_permission(params.get("permission_id"), f"service:{service}")
         ttl_minutes = params.get("ttl_minutes", 60)
         if not isinstance(ttl_minutes, int) or isinstance(ttl_minutes, bool) or not 1 <= ttl_minutes <= 240:
             raise ValueError("ttl_minutes must be an integer from 1 to 240")
+        self._consume_permission(params.get("permission_id"), f"service:{service}")
 
         service_id = "s_" + secrets.token_hex(6)
         network_name = "mcp-svc-" + secrets.token_hex(6)
@@ -322,6 +377,7 @@ class Tools(ExecSandbox):
         password = secrets.token_urlsafe(24)
         database = "app"
         image = "postgres:17-alpine" if service == "postgres" else "mongo:8"
+        client = None
         try:
             import docker
             client = docker.from_env()
@@ -350,10 +406,11 @@ class Tools(ExecSandbox):
             )
             client.close()
         except Exception as error:
-            try:
-                client.networks.get(network_name).remove()
-            except Exception:
-                pass
+            if client:
+                try:
+                    client.networks.get(network_name).remove()
+                except Exception:
+                    pass
             raise ValueError(f"could not start isolated {service} service: {error}")
 
         service_info = {
@@ -482,6 +539,29 @@ class Tools(ExecSandbox):
             network_allowed = True
         if service_network and network_allowed:
             raise ValueError("run dependency downloads separately from database-connected commands")
+        runtime_images = {
+            "base": "alpine:3.19",
+            "elixir": "elixir:1.18-slim",
+            "node": "mcp-sandbox-node:22",
+            "python": "python:3.12-slim",
+        }
+        image = runtime_images[runtime]
+        try:
+            import docker
+            image_client = docker.from_env()
+            try:
+                image_client.images.get(image)
+            except docker.errors.ImageNotFound:
+                if runtime == "node":
+                    raise ValueError("Node sandbox image is missing; rebuild it with mcp-server/run.sh")
+                self._consume_permission(params.get("runtime_permission_id"), f"runtime:{runtime}")
+            finally:
+                image_client.close()
+        except ValueError:
+            raise
+        except Exception as error:
+            raise ValueError(f"cannot check sandbox runtime image: {error}")
+        runtime_host_path = self._runtime_storage(project_path)
 
         job_id = "j_" + uuid.uuid4().hex[:12]
         job = {
@@ -495,8 +575,10 @@ class Tools(ExecSandbox):
             "storage_usage": None,
             "killed": False,
             "runtime": runtime,
+            "image": image,
             "project_path": project_path,
             "project_host_path": project_host_path,
+            "runtime_host_path": runtime_host_path,
             "network_allowed": network_allowed,
             "service_network": service_network,
         }
@@ -588,16 +670,19 @@ class Tools(ExecSandbox):
                 working_dir="/workspace",
                 user="1000:1000",
                 environment={
-                    "COREPACK_HOME": "/workspace/.sandbox-runtime/corepack",
-                    "HOME": "/workspace/.sandbox-runtime/home",
-                    "HEX_HOME": "/workspace/.sandbox-runtime/hex",
-                    "MIX_HOME": "/workspace/.sandbox-runtime/mix",
-                    "NPM_CONFIG_PREFIX": "/workspace/.sandbox-runtime/npm",
-                    "PNPM_HOME": "/workspace/.sandbox-runtime/pnpm",
-                    "PYTHONUSERBASE": "/workspace/.sandbox-runtime/python",
-                    "TMPDIR": "/tmp",
+                    "COREPACK_HOME": "/opt/runtime/corepack",
+                    "HOME": "/opt/runtime/home",
+                    "HEX_HOME": "/opt/runtime/hex",
+                    "MIX_HOME": "/opt/runtime/mix",
+                    "NPM_CONFIG_PREFIX": "/opt/runtime/npm",
+                    "PNPM_HOME": "/opt/runtime/pnpm",
+                    "PYTHONUSERBASE": "/opt/runtime/python",
+                    "TMPDIR": "/opt/runtime/tmp",
                 },
-                volumes={job["project_host_path"]: {"bind": "/workspace", "mode": "rw"}},
+                volumes={
+                    job["project_host_path"]: {"bind": "/workspace", "mode": "rw"},
+                    job["runtime_host_path"]: {"bind": "/opt/runtime", "mode": "rw"},
+                },
                 network=job["service_network"],
                 network_disabled=not job["network_allowed"] and not job["service_network"],
                 read_only=True,
@@ -666,10 +751,13 @@ class Tools(ExecSandbox):
 
 def build_tool_definitions():
     return [
-        {"function": {"name": "sandbox_request_permission", "description": "Request short-lived user approval for internet access or an isolated temporary database. Present the returned user_prompt and wait for an explicit yes before approving.", "parameters": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["network", "service:postgres", "service:mongodb"]}, "reason": {"type": "string"}}, "required": ["scope", "reason"]}}},
+        {"function": {"name": "sandbox_capabilities", "description": "Discover available sandbox runtimes, temporary services, isolation, and user approval rules.", "parameters": {"type": "object", "properties": {}, "required": []}}},
+        {"function": {"name": "sandbox_request_permission", "description": "Request short-lived user approval for internet access, a runtime image, a temporary database, or a workspace quota increase. Present the returned user_prompt and wait for an explicit yes before approving.", "parameters": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["network", "service:postgres", "service:mongodb", "runtime:base", "runtime:elixir", "runtime:python", "storage:increase"]}, "reason": {"type": "string"}, "limit_gb": {"type": "number"}}, "required": ["scope", "reason"]}}},
         {"function": {"name": "sandbox_approve_permission", "description": "Record the user's explicit decision for a pending sandbox permission request. Call only after the user answers; use the approval phrase shown to them.", "parameters": {"type": "object", "properties": {"request_id": {"type": "string"}, "approved": {"type": "boolean"}, "user_confirmation": {"type": "string"}}, "required": ["request_id", "approved", "user_confirmation"]}}},
+        {"function": {"name": "sandbox_set_storage_limit", "description": "Apply the exact workspace storage quota increase from a one-use, user-approved storage:increase permission. The increase lasts until the server restarts.", "parameters": {"type": "object", "properties": {"permission_id": {"type": "string"}}, "required": ["permission_id"]}}},
         {"function": {"name": "sandbox_start_service", "description": "Start a temporary, project-isolated PostgreSQL or MongoDB service. Requires a one-use user-approved permission_id from sandbox_approve_permission. Data is ephemeral and the service expires automatically.", "parameters": {"type": "object", "properties": {"service": {"type": "string", "enum": ["postgres", "mongodb"]}, "project_path": {"type": "string"}, "permission_id": {"type": "string"}, "ttl_minutes": {"type": "integer"}}, "required": ["service", "project_path", "permission_id"]}}},
         {"function": {"name": "sandbox_stop_service", "description": "Stop and remove a temporary database service and its isolated network.", "parameters": {"type": "object", "properties": {"service_id": {"type": "string"}}, "required": ["service_id"]}}},
+        {"function": {"name": "sandbox_reset_runtime", "description": "Remove persisted per-project package-manager caches and user-installed packages. Requires confirm=true.", "parameters": {"type": "object", "properties": {"project_path": {"type": "string"}, "confirm": {"type": "boolean"}}, "required": ["project_path", "confirm"]}}},
         {"function": {"name": "list_allowed_directories", "description": "Returns exactly one entry: /workspace.", "parameters": {"type": "object", "properties": {}, "required": []}}},
         {"function": {"name": "list_directory", "description": "List files/folders inside /workspace only.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "offset": {"type": "integer"}}, "required": ["path"]}}},
         {"function": {"name": "read_text_file", "description": "Read a text file inside /workspace only. Max 1 MB per call.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "offset": {"type": "integer"}}, "required": ["path"]}}},
@@ -679,7 +767,7 @@ def build_tool_definitions():
         {"function": {"name": "move_file", "description": "Move/rename inside /workspace only.", "parameters": {"type": "object", "properties": {"source": {"type": "string"}, "destination": {"type": "string"}}, "required": ["source", "destination"]}}},
         {"function": {"name": "delete_file", "description": "Delete a single file inside /workspace. Requires confirm=true.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "confirm": {"type": "boolean"}}, "required": ["path", "confirm"]}}},
         {"function": {"name": "get_storage_status", "description": "Return workspace usage stats.", "parameters": {"type": "object", "properties": {}, "required": []}}},
-        {"function": {"name": "exec_sandboxed", "description": "Run one command in an ephemeral Node, Python, Elixir, or base runtime. Project user packages persist under the project; use project_path to mount only that project. Internet installs require a prior user-approved network_permission_id. Use service_id to join that project's isolated database network.", "parameters": {"type": "object", "properties": {"command": {"type": "array", "items": {"type": "string"}}, "job_id": {"type": "string"}, "timeout_minutes": {"type": "integer"}, "runtime": {"type": "string", "enum": ["auto", "node", "python", "elixir", "base"]}, "project_path": {"type": "string"}, "network_permission_id": {"type": "string"}, "network_access": {"type": "boolean"}, "service_id": {"type": "string"}}, "required": ["command"]}}},
+        {"function": {"name": "exec_sandboxed", "description": "Run one command in an ephemeral Node, Python, Elixir, or base runtime. Project user packages persist in isolated storage; use project_path to mount only that project. Internet installs require a prior user-approved network_permission_id. Use service_id to join that project's isolated database network.", "parameters": {"type": "object", "properties": {"command": {"type": "array", "items": {"type": "string"}}, "job_id": {"type": "string"}, "timeout_minutes": {"type": "integer"}, "runtime": {"type": "string", "enum": ["auto", "node", "python", "elixir", "base"]}, "project_path": {"type": "string"}, "network_permission_id": {"type": "string"}, "network_access": {"type": "boolean"}, "service_id": {"type": "string"}}, "required": ["command"]}}},
         {"function": {"name": "exec_status", "description": "Check status of a background exec job.", "parameters": {"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]}}},
         {"function": {"name": "read_exec_log", "description": "Read paginated log of an exec job.", "parameters": {"type": "object", "properties": {"job_id": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, "required": ["job_id"]}}},
     ]

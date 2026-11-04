@@ -17,7 +17,7 @@ from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from .quota import QuotaManager, MAX_WORKSPACE_BYTES, StorageLimitExceeded
+from .quota import QuotaManager, StorageLimitExceeded
 from .path_guard import PathGuard, PathOutsideAllowed, PathTooLong
 from .tools import Tools, build_tool_definitions, ToolError
 
@@ -217,7 +217,7 @@ async def health():
     snap = quota_mgr.snapshot()
     return {
         "status": "ok",
-        "limit_bytes": MAX_WORKSPACE_BYTES,
+        "limit_bytes": quota_mgr.max_workspace_bytes,
         "used_bytes": snap.used_bytes,
         "free_bytes": snap.free_bytes,
         "files": snap.file_count,
