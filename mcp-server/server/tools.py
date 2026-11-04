@@ -349,16 +349,21 @@ class Tools(ExecSandbox):
         project_key = hashlib.sha256(project_path.encode("utf-8")).hexdigest()[:16]
         container_path = self.pg.validate_write(os.path.join(self.workspace, ".sandbox", "runtimes", project_key))
         relative = os.path.relpath(container_path, self.workspace)
-        host_path = os.path.join(self.sandbox_workspace, relative)
-        os.makedirs(host_path, exist_ok=True)
+        host_path = self.sandbox_workspace if relative == "." else os.path.join(self.sandbox_workspace, relative)
+        # Create the runtime storage directory on the container-side workspace
+        # bind mount (/workspace, which is writable). The host-side path is only
+        # consumed later as the docker bind source for the exec container.
+        container_dir = self.workspace if relative == "." else os.path.join(self.workspace, relative)
+        os.makedirs(container_dir, exist_ok=True)
         return os.path.realpath(host_path)
 
     def sandbox_reset_runtime(self, params):
         if params.get("confirm") is not True:
             raise ValueError("confirm=true is required to reset the project's runtime packages")
         project_path, _ = self._project_mount(params.get("project_path"))
-        storage_path = self._runtime_storage(project_path)
-        shutil.rmtree(storage_path, ignore_errors=True)
+        project_key = hashlib.sha256(project_path.encode("utf-8")).hexdigest()[:16]
+        reset_dir = os.path.join(self.workspace, ".sandbox", "runtimes", project_key)
+        shutil.rmtree(reset_dir, ignore_errors=True)
         return {"project_path": project_path, "status": "runtime_packages_removed"}
 
     def sandbox_start_service(self, params):
