@@ -79,7 +79,7 @@ class Tools(ExecSandbox):
         self.sandbox_workspace = os.path.realpath(
             os.environ.get("SANDBOX_WORKSPACE_HOST_PATH", self.workspace)
         )
-        self.pg = PathGuard(allowed=workspace)
+        self.pg = PathGuard(allowed=workspace, aliases=[self.sandbox_workspace])
         self.quota = QuotaManager(workspace=workspace)
         self.job_timeout_seconds = job_timeout_seconds
         self.job_dir = os.path.join(self.workspace, ".sandbox", "jobs")

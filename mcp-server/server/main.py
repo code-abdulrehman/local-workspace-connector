@@ -85,7 +85,10 @@ def build_tool_registry():
 # Globals
 # ---------------------------------------------------------------------------
 quota_mgr = QuotaManager()
-path_guard = PathGuard(allowed=WORKSPACE_DIR)
+path_guard = PathGuard(
+    allowed=WORKSPACE_DIR,
+    aliases=[os.environ.get("SANDBOX_WORKSPACE_HOST_PATH")],
+)
 tool_registry = build_tool_registry()
 
 # ---------------------------------------------------------------------------

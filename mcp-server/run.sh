@@ -23,7 +23,8 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
-# Create the configured host workspace (or ./workspace by default) before Docker mounts it.
+# Resolve the configured host workspace (../workspace by default) once, so both
+# Compose mounts and nested execution containers receive the same absolute path.
 set -a
 . ./.env
 set +a

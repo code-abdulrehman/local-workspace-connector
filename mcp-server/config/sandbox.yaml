@@ -3,7 +3,9 @@
 # It is NOT inside the workspace folder and CANNOT be edited by any MCP tool.
 # Changes require a human to edit this file and restart the container.
 
-# Container path. docker-compose.yml mounts PROJECT_FOLDER_ON_HOST here.
+# Container mount point. The host directory comes from PROJECT_FOLDER_ON_HOST
+# in .env; run.sh resolves it once and mounts that same directory here and in
+# nested execution containers.
 workspace: "/workspace"
 
 # Allowlist of FIRST WORDS accepted by exec_sandboxed.

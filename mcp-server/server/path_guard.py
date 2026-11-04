@@ -20,8 +20,9 @@ class PathTooLong(Exception):
 
 
 class PathGuard:
-    def __init__(self, allowed: str):
+    def __init__(self, allowed: str, aliases=None):
         self.allowed = os.path.realpath(allowed)
+        self.aliases = tuple(os.path.realpath(path) for path in (aliases or ()) if path)
 
     def resolve(self, raw_path: str) -> str:
         """Return real, absolute, symlink-resolved path."""
@@ -38,6 +39,11 @@ class PathGuard:
             pass  # we allow both but validate afterwards
 
         abs_path = os.path.abspath(raw_path)
+        for alias in self.aliases:
+            if abs_path == alias or abs_path.startswith(alias.rstrip(os.sep) + os.sep):
+                relative = os.path.relpath(abs_path, alias)
+                abs_path = self.allowed if relative == "." else os.path.join(self.allowed, relative)
+                break
         # Resolve symlinks (this also normalizes .. etc.)
         resolved = os.path.realpath(abs_path)
 
