@@ -1,5 +1,5 @@
 """
-MCP Server with hard 5 GB workspace limit and strict sandbox isolation.
+MCP Server with configurable workspace quota and strict sandbox isolation.
 Streamable HTTP transport with Bearer auth, path guards, quota checks, and
 sandboxed command execution via ephemeral Docker containers.
 """
