@@ -29,6 +29,8 @@ set -a
 set +a
 PROJECT_FOLDER_ON_HOST=${PROJECT_FOLDER_ON_HOST:-./workspace}
 mkdir -p "$PROJECT_FOLDER_ON_HOST/.sandbox/logs" "$PROJECT_FOLDER_ON_HOST/.sandbox/jobs"
+DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+export DOCKER_GID
 
 # Start Docker compose
 echo "Starting MCP server..."

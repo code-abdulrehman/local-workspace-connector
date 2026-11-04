@@ -23,6 +23,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     # NO --privileged, NO host network, NO host PID, NO root user
     user: "1000:1000"
+    # run.sh sets this to the host Docker socket's group so the app user can spawn jobs.
+    group_add:
+      - "${DOCKER_GID:-0}"
     security_opt:
       - no-new-privileges:true
     cap_drop:

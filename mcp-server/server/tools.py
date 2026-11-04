@@ -15,12 +15,14 @@ Tools:
   read_exec_log             - paginated read of job log file
 """
 
-import asyncio
 import os
 import json
 import shutil
 import logging
 import re
+import threading
+import time
+import uuid
 from datetime import datetime, timezone
 
 from .quota import QuotaManager, StorageLimitExceeded, MAX_WORKSPACE_BYTES
@@ -30,14 +32,6 @@ from .exec_sandbox import ExecSandbox
 logger = logging.getLogger("tools")
 
 TOOL_ERROR = "ToolError"
-
-
-def asyncio_get_event_loop_safe():
-    """Return the active loop, or create one for non-async callers."""
-    try:
-        return asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.new_event_loop()
 
 class ToolError(Exception):
     pass
@@ -85,6 +79,8 @@ class Tools(ExecSandbox):
         self.pg = PathGuard(allowed=workspace)
         self.quota = QuotaManager(workspace=workspace)
         self.job_timeout_seconds = job_timeout_seconds
+        self.job_dir = os.path.join(self.workspace, ".sandbox", "jobs")
+        os.makedirs(self.job_dir, exist_ok=True)
 
     # -- error helpers ------------------------------------------------------
     def __getattr__(self, name):
@@ -240,17 +236,29 @@ class Tools(ExecSandbox):
             _log("exec_sandboxed", first, "exec_reject", False)
             raise ValueError(f"command '{first}' is not in the allowlist")
 
-        use_job = job_id is None  # new job
-        if use_job:
-            # run in background
-            loop = asyncio_get_event_loop_safe()
-            result = loop.run_in_executor(None, self._spawn_exec_sync, cmd_args, job_timeout)
-            job_id = result["job_id"]
-            output = result
-        else:
-            output = self._poll_or_get_last(job_id)
+        if job_id:
+            return self.exec_status({"job_id": job_id})
 
-        return output
+        job_id = "j_" + uuid.uuid4().hex[:12]
+        job = {
+            "job_id": job_id,
+            "started": time.time(),
+            "timeout": job_timeout * 60,
+            "finished": False,
+            "exit_code": None,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "storage_usage": None,
+            "killed": False,
+        }
+        self._exec_registry[job_id] = job
+        thread = threading.Thread(
+            target=self._spawn_exec_sync,
+            args=(job_id, cmd_args, job_timeout),
+            daemon=True,
+        )
+        thread.start()
+        return {"job_id": job_id, "status": "running"}
 
     def exec_status(self, params):
         job_id = params.get("job_id")
@@ -259,7 +267,7 @@ class Tools(ExecSandbox):
             return {"status": "unknown", "message": f"unknown job_id {job_id}"}
         # check timeout
         remaining = info["started"] + info["timeout"] - time.time()
-        if remaining <= 0:
+        if remaining <= 0 and not info.get("finished"):
             info["killed"] = True
         return {
             "job_id": job_id,
@@ -275,16 +283,14 @@ class Tools(ExecSandbox):
         job_id = params.get("job_id")
         start = int(params.get("offset", 0))
         limit = int(params.get("limit", 1024))
-        job_path = os.path.join(JOB_DIR, job_id + ".log")
+        job_path = os.path.join(self.job_dir, job_id + ".log")
         if not os.path.isfile(job_path):
             return {"job_id": job_id, "logs": "", "finished": False}
         try:
             with open(job_path, "rb") as f:
+                f.seek(start)
                 data = f.read(limit)
-            remainder = f.tell() if start else 0
-            f.seek(max(0, remainder - limit))
-            to_read = data[max(0, len(data) - limit):] if start else data
-            return {"job_id": job_id, "logs": to_read.decode("utf-8", errors="replace"), "finished": os.path.isfile(os.path.join(JOB_DIR, job_id + ".done"))}
+            return {"job_id": job_id, "logs": data.decode("utf-8", errors="replace"), "finished": os.path.isfile(os.path.join(self.job_dir, job_id + ".done"))}
         except Exception as e:
             return {"job_id": job_id, "logs": "", "error": str(e)}
 
@@ -301,68 +307,71 @@ class Tools(ExecSandbox):
                 for sub in a:
                     self._validate_no_shell_metachars([sub])
 
-    async def _spawn_exec_sync(self, cmd_args, timeout_minutes):
-        # This is called via executor, we can't use asyncio inside sync.
-        # Fallback to direct subprocess — but wait, we're already sandboxed.
-        # For now use the internal helper that uses Docker.
-        return self._do_exec_docker(cmd_args, timeout_minutes)
+    def _spawn_exec_sync(self, job_id, cmd_args, timeout_minutes):
+        """Run an allowlisted command in a constrained ephemeral container."""
+        job = self._exec_registry[job_id]
+        log_path = os.path.join(self.job_dir, job_id + ".log")
+        done_path = os.path.join(self.job_dir, job_id + ".done")
+        binary = cmd_args[0]
+        if binary in {"node", "npm", "npx", "pnpm"}:
+            image = "node:22-alpine"
+        elif binary in {"python3", "pip"}:
+            image = "python:3.11-alpine"
+        else:
+            image = "alpine:3.19"
 
-    def _do_exec_docker(self, cmd_args, timeout_minutes):
-        """Spawn an ephemeral Docker container for the command."""
-        import docker
-        client = docker.from_env()
-
-        job_id = "j_" + uuid_local().hex[:8]
-        job_log_path = os.path.join(JOB_DIR, job_id + ".log")
-        done_marker = os.path.join(JOB_DIR, job_id + ".done")
-        os.makedirs(JOB_DIR, exist_ok=True)
-
-        proc = subprocess.Popen(
-            ["docker", "run", "--rm",
-             "--cap-drop", "ALL",
-             "--security-opt", "no-new-privileges",
-             "--read-only",
-             "--tmpfs", "/tmp:size=256m,noexec",
-             "--memory", "2g", "--memory-swap", "2g", "--cpus", "2",
-             "--pids-limit", "100",
-             "--network", "none",
-             "--user", "1000",
-             ],
-            cwd=WORKSPACE_DIR,
-            stdin=subprocess.PIPE,
-            stdout=open(job_log_path, "wb"),
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        os.makedirs(self.job_dir, exist_ok=True)
         try:
-            proc.communicate(input=("\n".join(cmd_args) + "\n").encode())
-        except Exception:
-            pass
-        rc = proc.returncode
-        finished = os.path.exists(done_marker)
-        stdout_tail = ""
-        if finished:
+            import docker
+            client = docker.from_env()
+            container = client.containers.run(
+                image,
+                cmd_args,
+                detach=True,
+                auto_remove=False,
+                working_dir="/workspace",
+                user="1000:1000",
+                volumes={self.workspace: {"bind": "/workspace", "mode": "rw"}},
+                network_disabled=True,
+                read_only=True,
+                tmpfs={"/tmp": "rw,noexec,nosuid,size=256m"},
+                cap_drop=["ALL"],
+                security_opt=["no-new-privileges:true"],
+                mem_limit="2g",
+                nano_cpus=2_000_000_000,
+                pids_limit=100,
+            )
             try:
-                with open(job_log_path, "r") as f:
-                    lines = f.readlines()
-                    stdout_tail = "".join(lines[-10:])
+                result = container.wait(timeout=max(1, timeout_minutes * 60))
+                exit_code = result.get("StatusCode", 1)
+            except Exception:
+                container.kill()
+                exit_code = 124
+                job["killed"] = True
+            finally:
+                with open(log_path, "wb") as log_file:
+                    log_file.write(container.logs(stdout=True, stderr=True))
+                container.remove(force=True)
+            client.close()
+        except Exception as error:
+            exit_code = 1
+            with open(log_path, "a", encoding="utf-8") as log_file:
+                log_file.write(f"\n{type(error).__name__}: {error}\n")
+        finally:
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as log_file:
+                    job["stdout_tail"] = log_file.read()[-4096:]
+            except OSError:
+                pass
+            job["exit_code"] = exit_code
+            job["finished"] = True
+            try:
+                snap = self.quota.snapshot()
+                job["storage_usage"] = {"used_bytes": snap.used_bytes, "file_count": snap.file_count}
             except Exception:
                 pass
-
-        storage_usage = None
-        try:
-            snap = self.quota.snapshot()
-            storage_usage = {"used_bytes": snap.used_bytes, "file_count": snap.file_count}
-        except Exception:
-            pass
-
-        return {
-            "job_id": job_id,
-            "status": "succeeded" if rc == 0 else "failed",
-            "exit_code": rc,
-            "stdout": stdout_tail,
-            "storage_usage": storage_usage,
-        }
+            with open(done_path, "w", encoding="utf-8") as marker:
+                marker.write("DONE\n")
 
     def _poll_or_get_last(self, job_id):
         """Poll the registry for last known status."""
