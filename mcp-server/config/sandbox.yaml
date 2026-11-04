@@ -18,6 +18,8 @@ allowlist:
   - "echo"
   - "python3"
   - "pip"
+  - "elixir"
+  - "mix"
   - "node"
   - "npm"
   - "pnpm"

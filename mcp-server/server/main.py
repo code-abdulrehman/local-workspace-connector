@@ -29,7 +29,7 @@ CONFIG = {
     "workspace": "/workspace",
     "allowlist": [
         "ls", "cat", "mkdir", "rmdir", "echo",
-        "python3", "pip",
+        "python3", "pip", "elixir", "mix",
         "node", "npm", "npx",
         "grep", "head", "tail", "wc", "find",
     ],
